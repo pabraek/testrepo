@@ -1,27 +1,111 @@
-name: Triggered Workflow
-
+name: upload tests
 on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
   workflow_dispatch:
     inputs:
-      environment:
-        description: 'Target environment (e.g., dev, staging, prod)'
-        required: true
-        default: 'dev'
-      debug:
-        description: 'Enable debug mode'
+      logLevel:
+        description: 'Log level'
         required: false
-        default: 'false'
+        type: choice
+        options:
+        - info
+        - warning
+        - debug
+      tags:
+        description: 'Test scenario tags'
+        required: false
         type: boolean
-
+      environment:
+        description: 'Environment to run tests against'
+        type: environment
+        required: false
 jobs:
-  run-automation:
+  build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Print Inputs
+      - uses: actions/checkout@v4
+      - name: Run a one-line script
         run: |
-          echo "Running in environment: ${{ github.event.inputs.environment }}"
-          echo "Debug mode: ${{ github.event.inputs.debug }}"
+          touch test_results.xml
+
+          cat > test_results.xml << EOL
+          <?xml version="1.0" encoding="UTF-8"?>
+          <testsuite name="CalculatorWebAppTestSuite2" tests="10" failures="1" errors="0" skipped="0" time="0.254">
+              <testcase classname="Calculator.BasicOperations" name="AdditionTest [RD-782]" time="0.005">
+                  <system-out>Verified addition functionality: 5 + 3 = 8</system-out>
+              </testcase>
+              <testcase classname="Calculator2.BasicOperations" name="SubtractionTest [RD-792]" time="0.004">
+                  <system-out>Verified subtraction functionality: 9 - 4 = 5</system-out>
+              </testcase>
+              <testcase classname="Calculator2.BasicOperations" name="MultiplicationTest [RD-802]" time="0.003">
+                  <system-out>Verified multiplication functionality: 7 * 6 = 42</system-out>
+              </testcase>
+              <testcase classname="Calculator2.BasicOperations" name="DivisionTest [RD-812]" time="0.004">
+                  <system-out>Verified division functionality: 8 / 2 = 4</system-out>
+              </testcase>
+              <testcase classname="Calculator2.ErrorHandling" name="DivisionByZeroTest_RD-882" time="0.002">
+                  <failure>Expected error message "Cannot divide by zero" but received no error.</failure>
+              </testcase>
+              <testcase classname="Calculator2.AdvancedOperations" name="SquareRootTest_RD_832" time="0.006">
+                  <system-out>Verified square root functionality: √16 = 4</system-out>
+              </testcase>
+              <testcase classname="Calculator2.AdvancedOperations" name="ExponentiationTest_RD-842" time="0.005">
+                  <system-out>Verified exponentiation functionality: 2^3 = 8</system-out>
+              </testcase>
+              <testcase classname="Calculator2.AdvancedOperations" name="ExponentiationTest_RD-842" time="0.11005">
+                  <system-out>1231Verified exponentiation functionality: 2^3 = 8</system-out>
+              </testcase>
+          </testsuite>
+          EOL
+          
+          ls -all
+
+          zip -r test_results.zip test_results.xml 
+
+          ls -all
+
+
+      - name: Run a multi-line script
+        env:
+          JOB_URL: ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}}
+          RTM_URL: ${{ vars.RTM_URL }}
+          RTM_API_TOKEN: ${{ secrets.RTM_API_TOKEN }}
+          PROJECT_KEY: AUT
+          TE_SUMMARY: Automated tests report build ${{ github.run_id }}
+        run: |              
+
+          RESULTS_ARCHIVE=test_results.tar.gz
+          find ./ -type f -name "*.xml" -exec tar czvf $RESULTS_ARCHIVE {} +              
+         
+          printf "\n[RTM] Importing test results...\n"
+          IMPORT_RESULT=$(curl -s -S -X POST ${RTM_URL}/api/v2/automation/import-test-results \
+            -H "Authorization: Bearer ${RTM_API_TOKEN}" \
+            -F "projectKey=${PROJECT_KEY}" \
+            -F "name=${TE_SUMMARY}" \
+            -F "file=@${RESULTS_ARCHIVE}" \
+            -F 'reportType=JUNIT' \
+            -F "jobUrl=${JOB_URL}")
+          # checks in loop import status
+          if [[ $IMPORT_RESULT =~ ^.{8}-.{4}-.{4}-.{4}-.{12}$ ]]; then
+            printf "[RTM] Import created with taskId: $IMPORT_RESULT, checking import status"
+            TASK_STATUS='IMPORTING'
+            TRIES=0
+            while [[ "$TASK_STATUS" == *"IMPORTING"* && $TRIES != 30 ]]; do
+              TASK_STATUS=$(curl -s -S ${RTM_URL}/api/v2/automation/import-status/$IMPORT_RESULT -H "Authorization: Bearer ${RTM_API_TOKEN}")
+              if [[ "$TASK_STATUS" == *"IMPORTING"* ]]; then
+                printf "\n[RTM] Importing, retrying in 10 second"
+                sleep 10s
+              fi
+              ((TRIES = TRIES + 1))
+            done
+            if [ $TRIES -gt 30 ]; then
+              printf "\n[RTM] Import timeout with last status: ${TASK_STATUS}\n"
+            else
+              printf "\n[RTM] Import completed with status: ${TASK_STATUS}\n"
+            fi
+          else
+            printf "\n[RTM] Import failed with response: ${IMPORT_RESULT}\n"
+          fi
